@@ -1,18 +1,18 @@
-#This was made by ZEXXY H4X
-#This was made by ZEXXY H4X 
-#This was made by ZEXXY H4X 
-#This was made by ZEXXY H4X 
-#This was made by ZEXXY H4X
-from flask import Flask, jsonify
+
+from flask import Flask, jsonify, request
 import aiohttp
 import asyncio
 import json
 from byte import encrypt_api, Encrypt_ID
-from visit_count_pb2 import Info  # Import the generated protobuf class
+from visit_count_pb2 import Info
 
 app = Flask(__name__)
 
 def load_tokens(server_name):
+    """
+    সার্ভার নাম অনুযায়ী JSON ফাইল থেকে টোকেন লোড করে।
+    রিটার্ন করে: (tokens_list, count)
+    """
     try:
         if server_name == "IND":
             path = "token_ind.json"
@@ -25,18 +25,22 @@ def load_tokens(server_name):
             data = json.load(f)
 
         tokens = [item["token"] for item in data if "token" in item and item["token"] not in ["", "N/A"]]
-        return tokens
+        return tokens, len(tokens)
     except Exception as e:
         app.logger.error(f"❌ Token load error for {server_name}: {e}")
-        return []
+        return [], 0
 
 def get_url(server_name):
+    """
+    সার্ভারের নাম অনুযায়ী সঠিক URL রিটার্ন করে।
+    """
     if server_name == "IND":
         return "https://client.ind.freefiremobile.com/GetPlayerPersonalShow"
     elif server_name in {"BR", "US", "SAC", "NA"}:
         return "https://client.us.freefiremobile.com/GetPlayerPersonalShow"
     else:
-        return "https://clientbp.ppmainecoonghj.com/GetPlayerPersonalShow"
+        # BD, ME, PK, TH, VN, ID – সবগুলো এই URL ব্যবহার করবে
+        return "https://clientbp.ggpolarbear.com/GetPlayerPersonalShow"
 
 def parse_protobuf_response(response_data):
     try:
@@ -86,7 +90,7 @@ async def send_until_1000_success(tokens, uid, server_name, target_success=1000)
         data = bytes.fromhex(encrypted)
 
         while total_success < target_success:
-            batch_size = min(target_success - total_success, 1000)
+            batch_size = min(target_success - total_success, 300)
             tasks = [
                 asyncio.create_task(visit(session, url, tokens[(total_sent + i) % len(tokens)], uid, data))
                 for i in range(batch_size)
@@ -108,36 +112,62 @@ async def send_until_1000_success(tokens, uid, server_name, target_success=1000)
 
     return total_success, total_sent, player_info
 
-@app.route('/<string:server>/<int:uid>', methods=['GET'])
-def send_visits(server, uid):
-    server = server.upper()
-    tokens = load_tokens(server)
-    target_success = 1000
+@app.route('/visit', methods=['GET'])
+def send_visits_query():
+    uid = request.args.get('uid')
+    server_name = request.args.get('server_name')
+    key = request.args.get('key')
+
+    # প্যারামিটার ভ্যালিডেশন
+    if not uid or not server_name or not key:
+        return jsonify({"error": "Missing parameters: uid, server_name, key"}), 400
+
+    if key != "MNSTR":
+        return jsonify({"error": "Invalid API key"}), 401
+
+    try:
+        uid_int = int(uid)
+    except ValueError:
+        return jsonify({"error": "uid must be an integer"}), 400
+
+    server = server_name.upper()
+    
+    # টোকেন লোড করুন এবং কাউন্ট নিন
+    tokens, token_count = load_tokens(server)
 
     if not tokens:
-        return jsonify({"error": "❌ No valid tokens found"}), 500
+        return jsonify({
+            "error": "❌ No valid tokens found for server",
+            "available_accounts": 0
+        }), 500
 
-    print(f"🚀 Sending visits to UID: {uid} using {len(tokens)} tokens")
+    target_success = 1000
+    print(f"🚀 Sending visits to UID: {uid_int} using {token_count} tokens")
     print(f"Waiting for total {target_success} successful visits...")
 
-    total_success, total_sent, player_info = asyncio.run(send_until_1000_success(
-        tokens, uid, server,
-        target_success=target_success
-    ))
+    total_success, total_sent, player_info = asyncio.run(
+        send_until_1000_success(tokens, uid_int, server, target_success)
+    )
 
     if player_info:
-        player_info_response = {
-            "fail": target_success - total_success,
+        response = {
+            "nickname": player_info.get("nickname", ""),
+            "uid": player_info.get("uid", 0)
             "level": player_info.get("level", 0),
             "likes": player_info.get("likes", 0),
-            "nickname": player_info.get("nickname", ""),
             "region": player_info.get("region", ""),
-            "success": total_success,
-            "uid": player_info.get("uid", 0)
+            "available_accounts": token_count,
+            "total_success": total_success,
+            "total_failed": target_success - total_success,
         }
-        return jsonify(player_info_response), 200
+        return jsonify(response), 200
     else:
-        return jsonify({"error": "Could not decode player information"}), 500
+        return jsonify({
+            "error": "Could not decode player information",
+            "available_accounts": token_count
+        }), 500
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5001)
+    app.run(host="0.0.0.0", port=8000)
+    
+    
